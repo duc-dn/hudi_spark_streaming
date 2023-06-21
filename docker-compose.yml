@@ -1,0 +1,160 @@
+version: '3'
+
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:6.0.0
+    hostname: zookeeper
+    container_name: zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 30000
+    networks:
+      - lakehouse
+
+  # broker:
+  #   image: confluentinc/cp-kafka:6.0.0
+  #   hostname: broker
+  #   container_name: broker
+  #   depends_on:
+  #     - zookeeper
+  #   ports:
+  #     - "9092:9092"
+  #     - "9999:9999"
+  #   environment:
+  #     KAFKA_BROKER_ID: 1
+  #     KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+  #     KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+  #     KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://broker:9092,PLAINTEXT_INTERNAL://broker:29092
+  #     KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+  #     KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+  #     KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+  #     KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+  #     KAFKA_JMX_PORT: 9999
+  #     KAFKA_JMX_HOSTNAME: localhost
+  #   networks:
+  #     - lakehouse
+
+  # akhq:
+  #   image: tchiotludo/akhq
+  #   container_name: akhq
+  #   environment:
+  #     AKHQ_CONFIGURATION: |
+  #       akhq:
+  #         connections:
+  #           docker-kafka-server:
+  #             properties:
+  #               bootstrap.servers: "broker:9092"
+  #             connect:
+  #               - name: "kafka-connect"
+  #                 url: "http://connect:8083"
+  #   ports:
+  #     - 8084:8080
+  #   links:
+  #     - broker
+  #   networks:
+  #     - lakehouse
+
+  spark-master:
+    image: ducdn01/cluster-apache-spark:3.1.1  # docker build -t ducdn01/cluster-apache-spark ./Dockerfiles/spark
+    container_name: master
+    ports:
+      - "9090:8080"
+      - "7077:7077"
+    volumes:
+      - ./docker-config/spark/workspace:/opt/workspace
+      - ./docker-config/spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    env_file:
+      - ./docker-config/spark/conf/spark-config.env
+    environment:
+      - SPARK_LOCAL_IP=spark-master
+      - SPARK_WORKLOAD=master
+      - PATH=/usr/local/openjdk-11/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/spark/bin:/opt/spark/sbin
+    networks:
+      - lakehouse
+
+  spark-worker-a:
+    image: ducdn01/cluster-apache-spark:3.1.1
+    container_name: worker-a
+    ports:
+      - "9091:8080"
+      - "7000:7000"
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_WORKER_CORES=1
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_DRIVER_MEMORY=1G
+      - SPARK_EXECUTOR_MEMORY=1G
+      - SPARK_WORKLOAD=worker
+      - SPARK_LOCAL_IP=spark-worker-a
+    volumes:
+      - ./docker-config/spark/workspace:/opt/workspace
+      - ./docker-config/spark/conf/spark-defaults.conf:/opt/spark/conf/spark-defaults.conf
+    networks:
+      - lakehouse
+
+  minio:
+    image: quay.io/minio/minio
+    container_name: minio
+    restart: always
+    environment:
+        - MINIO_ROOT_USER=admin
+        - MINIO_ROOT_PASSWORD=123456789
+    ports:
+        - "9001:9001"
+        - "9000:9000"
+    command: server /data --console-address ":9001"
+    healthcheck:
+        test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+        interval: 30s
+        timeout: 30s
+        retries: 3
+    networks:
+      - lakehouse
+
+  trino-coordinator:
+    image: 'trinodb/trino:latest'
+    hostname: trino-coordinator
+    container_name: trino
+    ports:
+      - '8080:8080'
+    volumes:
+      - ./docker-config/trino/etc:/etc/trino
+    networks:
+      - lakehouse
+
+  mariadb:
+    image: 'mariadb:latest'
+    hostname: mariadb
+    container_name: mariadb
+    ports:
+      - '3306:3306'
+    environment:
+      MYSQL_ROOT_PASSWORD: admin
+      MYSQL_USER: admin
+      MYSQL_PASSWORD: admin
+      MYSQL_DATABASE: metastore_db
+    networks:
+      - lakehouse
+
+  hive-metastore:
+    image: 'bitsondatadev/hive-metastore:latest'
+    hostname: hive-metastore
+    container_name: hive-metastore
+    ports:
+      - '9083:9083' # Metastore Thrift
+    volumes:
+      - ./docker-config/hive/metastore-site.xml:/opt/apache-hive-metastore-3.0.0-bin/conf/metastore-site.xml:ro
+    environment:
+      METASTORE_DB_HOSTNAME: mariadb
+    depends_on:
+      - mariadb
+    networks:
+      - lakehouse
+
+networks:
+  lakehouse:
+    driver: bridge

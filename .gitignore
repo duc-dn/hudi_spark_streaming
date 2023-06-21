@@ -1,0 +1,7 @@
+__pycache__/
+venv/
+metastore_db/
+derby.log
+minio/data/*
+.idea
+*.pyc
